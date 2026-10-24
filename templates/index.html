@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetWatch</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background:#0b1220; color:#e2e8f0; margin:0; padding:24px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+  h1 { margin:0; font-size:26px; }
+  .sub { color:#94a3b8; font-size:14px; margin-top:2px; }
+  .live { font-size:13px; color:#94a3b8; display:flex; align-items:center; gap:6px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#22c55e; box-shadow:0 0 8px #22c55e; }
+  .dot.off { background:#ef4444; box-shadow:0 0 8px #ef4444; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px; }
+  .card { background:#151f33; border:1px solid #1e293b; border-radius:12px; padding:16px; }
+  .card h2 { margin:0 0 12px; font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#7dd3fc; }
+  .big { font-size:34px; font-weight:700; }
+  .big small { font-size:13px; color:#94a3b8; font-weight:400; }
+  .row2 { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .chartbox { position:relative; height:250px; }
+  .feed { max-height:250px; overflow:auto; }
+  .line { display:flex; gap:10px; align-items:center; padding:5px 0; border-bottom:1px solid #1e293b; font-size:13px; }
+  .time { color:#64748b; font-family:ui-monospace,monospace; flex:none; }
+  .badge { padding:2px 8px; border-radius:999px; font-size:11px; flex:none; }
+  .dom { font-family:ui-monospace,monospace; word-break:break-all; }
+  @media (max-width:900px) { .stats, .row2, .row3 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>NetWatch</h1>
+      <div class="sub">Which domains is this computer talking to? (DNS lookups only)</div>
+    </div>
+    <div class="live"><span id="dot" class="dot"></span><span id="status">live</span></div>
+  </header>
+
+  <div class="stats">
+    <div class="card"><h2>Total lookups</h2><div class="big" id="total">0</div></div>
+    <div class="card"><h2>Unique domains</h2><div class="big" id="unique">0</div></div>
+    <div class="card"><h2>Last minute</h2><div class="big"><span id="rate">0</span> <small>lookups</small></div></div>
+  </div>
+
+  <div class="row2">
+    <div class="card"><h2>Lookups per minute (last 30 min)</h2><div class="chartbox"><canvas id="line"></canvas></div></div>
+    <div class="card"><h2>By category</h2><div class="chartbox"><canvas id="donut"></canvas></div></div>
+  </div>
+
+  <div class="row3">
+    <div class="card"><h2>Top domains</h2><div class="chartbox"><canvas id="top"></canvas></div></div>
+    <div class="card"><h2>Live feed</h2><div class="feed" id="feed"></div></div>
+  </div>
+
+<script src="{{ url_for('static', filename='chart.umd.js') }}"></script>
+<script>
+  const COLORS = {
+    "Ads and trackers": "#f87171", "Google": "#60a5fa", "Microsoft": "#34d399",
+    "Social media": "#c084fc", "CDN / infrastructure": "#fbbf24",
+    "Dev and system updates": "#2dd4bf", "Browser (Mozilla)": "#fb923c",
+    "AI tools": "#a78bfa", "Other": "#94a3b8"
+  };
+  const colorFor = c => COLORS[c] || "#94a3b8";
+
+  Chart.defaults.color = "#94a3b8";
+  Chart.defaults.borderColor = "#1e293b";
+  Chart.defaults.font.family = "system-ui, sans-serif";
+
+  const lineChart = new Chart(document.getElementById("line"), {
+    type: "line",
+    data: { labels: [], datasets: [{ data: [], borderColor: "#38bdf8",
+      backgroundColor: "rgba(56,189,248,0.15)", fill: true, tension: 0.3, pointRadius: 0 }] },
+    options: { animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { ticks: { maxTicksLimit: 8 } } } }
+  });
+
+  const donut = new Chart(document.getElementById("donut"), {
+    type: "doughnut",
+    data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 0 }] },
+    options: { animation: false, maintainAspectRatio: false, cutout: "62%",
+      plugins: { legend: { position: "bottom", labels: { boxWidth: 12 } } } }
+  });
+
+  const topBar = new Chart(document.getElementById("top"), {
+    type: "bar",
+    data: { labels: [], datasets: [{ data: [], backgroundColor: "#38bdf8", borderRadius: 4 }] },
+    options: { indexAxis: "y", animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } }
+  });
+
+  function renderFeed(items) {
+    const feed = document.getElementById("feed");
+    while (feed.firstChild) feed.removeChild(feed.firstChild);
+    items.forEach(q => {
+      const line = document.createElement("div"); line.className = "line";
+      const t = document.createElement("span"); t.className = "time";
+      t.textContent = q.ts.slice(11);
+      const b = document.createElement("span"); b.className = "badge";
+      b.textContent = q.category;                 // textContent, never innerHTML
+      b.style.background = colorFor(q.category) + "33";
+      b.style.color = colorFor(q.category);
+      const dm = document.createElement("span"); dm.className = "dom";
+      dm.textContent = q.domain;                  // domains are untrusted input
+      line.append(t, b, dm);
+      feed.appendChild(line);
+    });
+  }
+
+  function setStatus(ok) {
+    document.getElementById("dot").className = ok ? "dot" : "dot off";
+    document.getElementById("status").textContent = ok ? "live" : "connection lost";
+  }
+
+  async function refresh() {
+    try {
+      const d = await (await fetch("/api/stats")).json();
+      document.getElementById("total").textContent = d.total;
+      document.getElementById("unique").textContent = d.unique;
+      document.getElementById("rate").textContent = d.last_minute;
+
+      lineChart.data.labels = d.timeline.labels;
+      lineChart.data.datasets[0].data = d.timeline.values;
+      lineChart.update();
+
+      donut.data.labels = d.categories.map(c => c.category);
+      donut.data.datasets[0].data = d.categories.map(c => c.n);
+      donut.data.datasets[0].backgroundColor = d.categories.map(c => colorFor(c.category));
+      donut.update();
+
+      topBar.data.labels = d.top.map(t => t.domain);
+      topBar.data.datasets[0].data = d.top.map(t => t.n);
+      topBar.update();
+
+      renderFeed(d.recent);
+      setStatus(true);
+    } catch (e) {
+      setStatus(false);
+    }
+  }
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>
